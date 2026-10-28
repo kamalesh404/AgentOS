@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -113,10 +114,26 @@ class BaseAgent:
     def system_prompt(self) -> str:
         return self._format_prompt(DEFAULT_SYSTEM_PROMPT)
 
+    def _fallback_thought(self, step: int, exc: Exception | None = None) -> Thought:
+        """Return a deterministic fallback when no LLM is available or the model call fails."""
+        reason = "planner unavailable"
+        if exc is not None:
+            reason = f"{type(exc).__name__}: {exc}"
+        fallback_message = (
+            "AgentOS is running without a valid OpenAI API key or the model request failed. "
+            "Set OPENAI_API_KEY to enable autonomous planning; otherwise this environment can only "
+            "return a deterministic fallback answer."
+        )
+        return Thought(step=step, reasoning=reason, action="finish", action_input=fallback_message)
+
     def _call_llm(self, messages: list[dict[str, str]]) -> str:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set; using deterministic fallback.")
+
         from openai import OpenAI
 
-        client = OpenAI()
+        client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -136,12 +153,7 @@ class BaseAgent:
             raw = self._call_llm(messages)
             reasoning, action, action_input = self._parse_response(raw)
         except Exception as exc:
-            return Thought(
-                step=step,
-                reasoning=f"planner unavailable: {exc}",
-                action="finish",
-                action_input=f"Unable to plan further ({exc}).",
-            )
+            return self._fallback_thought(step, exc)
         return Thought(step=step, reasoning=reasoning, action=action, action_input=action_input)
 
     @staticmethod
